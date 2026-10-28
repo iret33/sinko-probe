@@ -10,7 +10,9 @@ COPY pyproject.toml README.md ./
 COPY src/ ./src/
 COPY configs/ ./configs/
 
-RUN pip install . && useradd --create-home --uid 10001 probe
+RUN pip install . \
+ && useradd --create-home --uid 10001 probe \
+ && mkdir /reports && chown probe /reports
 
 # Reports land in /reports: docker run -v "$PWD:/reports" ... --html /reports/audit.html
 USER probe
