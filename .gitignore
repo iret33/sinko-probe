@@ -13,9 +13,11 @@ dist/
 build/
 *.egg-info/
 
-# Reports & Artifacts
-*.html
-*.json
-*.csv
+# Reports written by `make run-local` or ad-hoc runs in the repo root
+/*.html
+/*.json
+/*.csv
+/reports/
+
 .pytest_cache/
 .ruff_cache/
