@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sinko-probe"
+version = "1.0.0"
+description = "State-of-the-art multi-protocol DNS traffic simulator, SafeSearch auditor, and benchmark suite for Sinko and DNS ad-blockers."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "iret33", email = "iret33@users.noreply.github.com" }
+]
+keywords = [
+    "dns", "sinko", "adblock", "sinkhole", "parental-control",
+    "safesearch", "doh", "dot", "pihole", "benchmark", "security"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: Telecommunications Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: Name Service (DNS)",
+    "Topic :: System :: Networking :: Monitoring",
+    "Topic :: Security",
+]
+dependencies = [
+    "dnspython[doh]>=2.6.1",
+    "httpx[http2]>=0.27.0",
+    "pydantic>=2.7.0",
+    "pyyaml>=6.0.1",
+    "rich>=13.7.1",
+    "typer>=0.12.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.6",
+    "ruff>=0.4.4",
+]
+
+[project.urls]
+Homepage = "https://github.com/iret33/sinko-probe"
+SinkoProject = "https://github.com/iret33/sinko"
+Issues = "https://github.com/iret33/sinko-probe/issues"
+
+[project.scripts]
+sinko-probe = "sinko_probe.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sinko_probe"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

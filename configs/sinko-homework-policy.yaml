@@ -1,0 +1,14 @@
+policy_name: "Sinko Afternoon Homework Mode (3:00 PM - 8:00 PM)"
+category_rules:
+  ads: block
+  telemetry: block
+  parental_restricted: block
+  gaming: block
+  social: block
+  safe_search: safesearch
+  core_service: allow
+custom_blocklist:
+  - "chat.roblox.com"
+custom_allowlist:
+  - "www.khanacademy.org"
+  - "scratch.mit.edu"
