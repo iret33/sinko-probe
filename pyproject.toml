@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sinko-probe"
-version = "1.0.0"
-description = "State-of-the-art multi-protocol DNS traffic simulator, SafeSearch auditor, and benchmark suite for Sinko and DNS ad-blockers."
+dynamic = ["version"]
+description = "Multi-protocol DNS traffic simulator, SafeSearch auditor, and benchmark suite for Sinko and other DNS filters."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -17,33 +17,39 @@ keywords = [
     "safesearch", "doh", "dot", "pihole", "benchmark", "security"
 ]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: System Administrators",
     "Intended Audience :: Telecommunications Industry",
     "License :: OSI Approved :: MIT License",
+    "Natural Language :: Arabic",
+    "Natural Language :: English",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Internet :: Name Service (DNS)",
     "Topic :: System :: Networking :: Monitoring",
     "Topic :: Security",
 ]
+# Minimum versions are tested: the suite passes with exactly these releases installed.
 dependencies = [
-    "dnspython[doh]>=2.6.1",
+    "dnspython>=2.6.1",
     "httpx[http2]>=0.27.0",
     "pydantic>=2.7.0",
     "pyyaml>=6.0.1",
     "rich>=13.7.1",
-    "typer>=0.12.3",
+    "typer>=0.13.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.6",
-    "ruff>=0.4.4",
+    "ruff>=0.17.3,<0.18",
+    "trustme>=1.1.0",
 ]
 
 [project.urls]
@@ -54,8 +60,15 @@ Issues = "https://github.com/iret33/sinko-probe/issues"
 [project.scripts]
 sinko-probe = "sinko_probe.cli:app"
 
+[tool.hatch.version]
+path = "src/sinko_probe/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/sinko_probe"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 100

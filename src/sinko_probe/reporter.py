@@ -1,172 +1,292 @@
+"""Terminal (Rich) reports plus JSON and CSV exports.
+
+Everything that comes from the command line or from DNS answers is wrapped in ``Text`` so Rich
+never parses it as markup: a CNAME containing ``[/]`` must not crash the report.
+"""
+
 import csv
 import json
-from collections import defaultdict
+from collections.abc import Sequence
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
-from rich.console import Console
+
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
-from .models import ExpectedAction, ProbeResult, TargetSummary, Verdict
+from . import __version__
+from .analysis import (
+    Hint,
+    ProbeGroup,
+    answered_latencies,
+    group_results,
+    percent,
+    results_by_app,
+    tally,
+)
+from .i18n import (
+    Lang,
+    category_label,
+    expected_label,
+    format_ms,
+    format_rate,
+    outcome_label,
+    t,
+    verdict_label,
+)
+from .models import ExpectedAction, Outcome, ProbeResult, TargetSummary, Verdict
 
-console = Console()
+OUTCOME_STYLES = {
+    Outcome.PASS: "bold green",
+    Outcome.FAIL: "bold red",
+    Outcome.ERROR: "bold magenta",
+    Outcome.INCONCLUSIVE: "bold yellow",
+}
+
+
+def verdict_style(verdict: Verdict) -> str:
+    if verdict.is_blocked or verdict == Verdict.SAFESEARCH_ENFORCED:
+        return "green"
+    if verdict.is_error:
+        return "bold red"
+    if verdict == Verdict.UPSTREAM_NXDOMAIN:
+        return "magenta"
+    return "yellow"
+
+
+def score_style(score: float | None) -> str:
+    if score is None:
+        return "dim"
+    return "green" if score >= 85 else ("yellow" if score >= 60 else "red")
+
+
+def display_domain(result: ProbeResult) -> str:
+    """Show cache-busted probes as the wildcard they test."""
+    return result.domain if result.qname in (None, result.domain) else f"*.{result.domain}"
+
+
+def answer_summary(result: ProbeResult, max_ips: int = 2) -> str:
+    if result.verdict.is_error:
+        return result.error_message or "-"
+    parts = []
+    if result.cname_chain:
+        parts.append(f"CNAME {result.cname_chain[0]}")
+    if result.resolved_ips:
+        extra = len(result.resolved_ips) - max_ips
+        parts.append(", ".join(result.resolved_ips[:max_ips]) + (f" +{extra}" if extra > 0 else ""))
+    if result.ede_codes:
+        parts.append("EDE " + ",".join(map(str, result.ede_codes)))
+    return " · ".join(parts) or "-"
+
+
+def _fraction(passed: int, total: int) -> str:
+    return f"{passed}/{total}"
+
+
+def _outcome_cell(group: ProbeGroup, lang: Lang) -> Text:
+    label = outcome_label(group.outcome, lang)
+    if group.runs > 1:
+        label += f" {group.passes}/{group.runs}"
+    return Text(label, style=OUTCOME_STYLES[group.outcome])
 
 
 def render_detailed_report(
-    results: List[ProbeResult], summary: TargetSummary, lang: str = "en"
+    results: Sequence[ProbeResult],
+    summary: TargetSummary,
+    lang: Lang | str = Lang.EN,
+    console: Console | None = None,
+    hints: Sequence[Hint] = (),
 ) -> None:
-    title = (
-        f"🛡️ تقرير فحص سينكو (Sinko-Probe) — {summary.target_name} [{summary.server_endpoint}]"
-        if lang == "ar"
-        else f"🛡️ Sinko-Probe Audit Report — {summary.target_name} [{summary.server_endpoint} / {summary.protocol.value.upper()}]"
+    console = console or Console()
+    lang = Lang(lang)
+    title = Text.assemble(
+        "🛡️ ",
+        (t("report_title", lang), "bold"),
+        f" — {summary.target_name} [{summary.server_endpoint} / {summary.protocol.value.upper()}]",
     )
 
-    detail_table = Table(title=title, header_style="bold cyan", show_lines=False)
-    detail_table.add_column("App Profile" if lang == "en" else "التطبيق", style="bold")
-    detail_table.add_column("Domain" if lang == "en" else "النطاق")
-    detail_table.add_column("Category" if lang == "en" else "الفئة", style="dim")
-    detail_table.add_column("Expected" if lang == "en" else "المتوقع")
-    detail_table.add_column("Verdict" if lang == "en" else "النتيجة")
-    detail_table.add_column("CNAME / IP", style="dim")
-    detail_table.add_column("Latency", justify="right")
-    detail_table.add_column("Audit" if lang == "en" else "التقييم", justify="center")
+    details = Table(title=title, header_style="bold cyan")
+    details.add_column(t("col_app", lang), style="bold")
+    details.add_column(t("col_domain", lang))
+    details.add_column(t("col_category", lang), style="dim")
+    details.add_column(t("col_expected", lang))
+    details.add_column(t("col_verdict", lang))
+    details.add_column(t("col_answer", lang), style="dim")
+    details.add_column(t("col_latency", lang), justify="right")
+    details.add_column(t("col_result", lang), justify="center")
 
-    for r in results:
-        if "BLOCKED" in r.verdict.value or r.verdict == Verdict.SAFESEARCH_ENFORCED:
-            v_style = "green"
-        elif r.verdict == Verdict.ERROR_TIMEOUT:
-            v_style = "bold red"
-        else:
-            v_style = "yellow"
-
-        badge = "[bold green]PASS[/]" if r.passed_expectation else "[bold red]FAIL[/]"
-        target_info = (
-            f"CNAME: {r.cname_chain[0]}"
-            if r.cname_chain
-            else (", ".join(r.resolved_ips[:2]) if r.resolved_ips else "-")
+    for group in group_results(results):
+        first = group.first
+        details.add_row(
+            Text(first.app_name_ar if lang == Lang.AR else first.app_name),
+            Text(display_domain(first)),
+            Text(category_label(first.category, lang)),
+            Text(expected_label(first.expected, lang)),
+            Text(verdict_label(group.verdict, lang), style=verdict_style(group.verdict)),
+            Text(answer_summary(group.latest_answer)),
+            Text(format_ms(group.median_latency_ms, lang)),
+            _outcome_cell(group, lang),
         )
-        app_label = r.app_name_ar if lang == "ar" else r.app_name
-
-        detail_table.add_row(
-            app_label,
-            r.domain,
-            r.category.value,
-            r.expected.value.upper(),
-            f"[{v_style}]{r.verdict.value}[/]",
-            target_info,
-            f"{r.latency_ms:.1f} ms",
-            badge,
-        )
-
-    console.print(detail_table)
+    console.print(details)
     console.print()
 
-    app_table = Table(
-        title="📊 Application Protection Scorecard" if lang == "en" else "📊 بطاقة أداء حماية التطبيقات",
-        header_style="bold magenta",
-    )
-    app_table.add_column("Application" if lang == "en" else "التطبيق")
-    app_table.add_column("Probes", justify="right")
-    app_table.add_column("Blocked", justify="right")
-    app_table.add_column("SafeSearch", justify="right")
-    app_table.add_column("Core Allowed", justify="right")
-    app_table.add_column("Avg Latency", justify="right")
-    app_table.add_column("Score", justify="right")
+    scorecard = Table(title=Text("📊 " + t("scorecard_title", lang)), header_style="bold magenta")
+    scorecard.add_column(t("col_app", lang))
+    for key in ("col_probes", "col_blocked", "col_safesearch", "col_allowed", "col_errors"):
+        scorecard.add_column(t(key, lang), justify="right")
+    scorecard.add_column(t("col_avg_latency", lang), justify="right")
+    scorecard.add_column(t("col_score", lang), justify="right")
 
-    grouped = defaultdict(list)
-    for r in results:
-        key = r.app_name_ar if lang == "ar" else r.app_name
-        grouped[key].append(r)
-
-    for app_label, items in grouped.items():
-        total = len(items)
-        exp_b = [i for i in items if i.expected == ExpectedAction.BLOCK]
-        act_b = [i for i in exp_b if i.passed_expectation]
-
-        exp_ss = [i for i in items if i.expected == ExpectedAction.SAFESEARCH]
-        act_ss = [i for i in exp_ss if i.passed_expectation]
-
-        exp_a = [i for i in items if i.expected == ExpectedAction.ALLOW]
-        act_a = [i for i in exp_a if i.passed_expectation]
-
-        passed = sum(1 for i in items if i.passed_expectation)
-        pct = (passed / total) * 100 if total else 0.0
-        avg_lat = sum(i.latency_ms for i in items) / total if total else 0.0
-        color = "green" if pct >= 85 else ("yellow" if pct >= 60 else "red")
-
-        app_table.add_row(
-            app_label,
-            str(total),
-            f"{len(act_b)}/{len(exp_b)}",
-            f"{len(act_ss)}/{len(exp_ss)}",
-            f"{len(act_a)}/{len(exp_a)}",
-            f"{avg_lat:.1f} ms",
-            f"[bold {color}]{pct:.1f}%[/]",
+    for items in results_by_app(results).values():
+        first = items[0]
+        blocked = tally(items, ExpectedAction.BLOCK)
+        safesearch = tally(items, ExpectedAction.SAFESEARCH)
+        allowed = tally(items, ExpectedAction.ALLOW)
+        passed = sum(i.outcome == Outcome.PASS for i in items)
+        judged = sum(i.outcome != Outcome.INCONCLUSIVE for i in items)
+        score = percent(passed, judged)
+        latencies = answered_latencies(items)
+        avg = sum(latencies) / len(latencies) if latencies else None
+        scorecard.add_row(
+            Text(first.app_name_ar if lang == Lang.AR else first.app_name),
+            str(len(items)),
+            _fraction(blocked.passed, blocked.conclusive),
+            _fraction(safesearch.passed, safesearch.conclusive),
+            _fraction(allowed.passed, allowed.conclusive),
+            str(sum(i.outcome == Outcome.ERROR for i in items)),
+            format_ms(avg, lang),
+            Text(format_rate(score, lang), style=f"bold {score_style(score)}"),
         )
+    console.print(scorecard)
 
-    console.print(app_table)
-    console.print(
-        Panel(
-            f"[bold]Compliance Score:[/] [bold cyan]{summary.compliance_score:.1f}%[/]   "
-            f"[bold]Block Efficacy:[/] [green]{summary.block_rate:.1f}%[/]   "
-            f"[bold]SafeSearch:[/] [cyan]{summary.safesearch_rate:.1f}%[/]   "
-            f"[bold]False Positives:[/] [yellow]{summary.false_positive_rate:.1f}%[/]\n"
-            f"[dim]Latency Percentiles — p50: {summary.p50_ms} ms | p95: {summary.p95_ms} ms | p99: {summary.p99_ms} ms[/]",
-            title="Sinko Telemetry Summary",
-            expand=False,
-        )
+    kpis = Text.assemble(
+        (f"{t('kpi_compliance', lang)}: ", "bold"),
+        (
+            format_rate(summary.compliance_score, lang),
+            f"bold {score_style(summary.compliance_score)}",
+        ),
+        "   ",
+        (f"{t('kpi_block', lang)}: ", "bold"),
+        (format_rate(summary.block_rate, lang), "green"),
+        "   ",
+        (f"{t('kpi_safesearch', lang)}: ", "bold"),
+        (format_rate(summary.safesearch_rate, lang), "cyan"),
+        "   ",
+        (f"{t('kpi_false_positives', lang)}: ", "bold"),
+        (
+            format_rate(summary.false_positive_rate, lang),
+            "green" if not summary.false_positive_rate else "bold red",
+        ),
     )
-
-
-def render_comparison_table(summaries: List[TargetSummary]) -> None:
-    comp_table = Table(
-        title="🏆 Head-to-Head DNS Resolver & Parental Control Benchmark",
-        header_style="bold cyan",
+    counts = Text(
+        t(
+            "label_probes_summary",
+            lang,
+            passed=summary.passed_probes,
+            failed=summary.failed_probes,
+            errors=summary.error_probes,
+            inconclusive=summary.inconclusive_probes,
+        ),
+        style="dim",
     )
-    comp_table.add_column("Resolver Target", style="bold")
-    comp_table.add_column("Endpoint")
-    comp_table.add_column("Protocol", justify="center")
-    comp_table.add_column("Overall Score", justify="right")
-    comp_table.add_column("Block Efficacy", justify="right")
-    comp_table.add_column("SafeSearch", justify="right")
-    comp_table.add_column("False Positives", justify="right")
-    comp_table.add_column("p50 / p95 Latency", justify="right")
+    latency = Text(
+        f"{t('kpi_latency', lang)}: {format_ms(summary.p50_ms, lang)} | "
+        f"{format_ms(summary.p95_ms, lang)} | {format_ms(summary.p99_ms, lang)}",
+        style="dim",
+    )
+    console.print(Panel(Group(kpis, counts, latency), title=t("summary_title", lang), expand=False))
+    render_hints(hints, lang, console)
 
-    for s in sorted(summaries, key=lambda x: x.compliance_score, reverse=True):
-        color = "green" if s.compliance_score >= 85 else ("yellow" if s.compliance_score >= 60 else "red")
-        fp_color = "green" if s.false_positive_rate == 0 else "bold red"
-        comp_table.add_row(
-            s.target_name,
-            s.server_endpoint,
+
+def render_hints(hints: Sequence[Hint], lang: Lang | str, console: Console) -> None:
+    for hint in hints:
+        console.print(Text("• " + t(f"hint_{hint.key}", lang, **hint.params), style="yellow"))
+
+
+def render_comparison_table(
+    summaries: Sequence[TargetSummary],
+    lang: Lang | str = Lang.EN,
+    console: Console | None = None,
+) -> None:
+    console = console or Console()
+    lang = Lang(lang)
+    table = Table(title=Text("🏆 " + t("compare_title", lang)), header_style="bold cyan")
+    table.add_column(t("col_target", lang), style="bold")
+    table.add_column(t("col_endpoint", lang))
+    table.add_column(t("col_protocol", lang), justify="center")
+    for key in ("kpi_compliance", "kpi_block", "kpi_safesearch", "kpi_false_positives"):
+        table.add_column(t(key, lang), justify="right")
+    table.add_column(t("kpi_errors", lang), justify="right")
+    table.add_column(t("col_p50_p95", lang), justify="right")
+
+    ranked = sorted(
+        summaries,
+        key=lambda s: s.compliance_score if s.compliance_score is not None else -1.0,
+        reverse=True,
+    )
+    for s in ranked:
+        table.add_row(
+            Text(s.target_name),
+            Text(s.server_endpoint),
             s.protocol.value.upper(),
-            f"[bold {color}]{s.compliance_score:.1f}%[/]",
-            f"{s.block_rate:.1f}%",
-            f"{s.safesearch_rate:.1f}%",
-            f"[{fp_color}]{s.false_positive_rate:.1f}%[/]",
-            f"{s.p50_ms} / {s.p95_ms} ms",
+            Text(
+                format_rate(s.compliance_score, lang),
+                style=f"bold {score_style(s.compliance_score)}",
+            ),
+            format_rate(s.block_rate, lang),
+            format_rate(s.safesearch_rate, lang),
+            Text(
+                format_rate(s.false_positive_rate, lang),
+                style="green" if not s.false_positive_rate else "bold red",
+            ),
+            Text(f"{s.error_rate:.1f}%", style="green" if not s.error_probes else "bold red"),
+            f"{format_ms(s.p50_ms, lang)} / {format_ms(s.p95_ms, lang)}",
         )
-    console.print(comp_table)
+    console.print(table)
 
 
-def export_json(results: List[ProbeResult], summary: TargetSummary, path: Path) -> None:
+def _report_metadata() -> dict[str, str]:
+    return {
+        "tool": "sinko-probe",
+        "version": __version__,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def export_json(
+    results: Sequence[ProbeResult],
+    summary: TargetSummary,
+    path: Path,
+    hints: Sequence[Hint] = (),
+) -> None:
     payload = {
+        **_report_metadata(),
         "summary": summary.model_dump(mode="json"),
+        "hints": [{"key": h.key, "params": h.params} for h in hints],
         "results": [r.model_dump(mode="json") for r in results],
     }
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    console.print(f"[bold green]✔ JSON report saved:[/] {path}")
+    _write_text(path, json.dumps(payload, indent=2, ensure_ascii=False))
 
 
-def export_csv(results: List[ProbeResult], path: Path) -> None:
-    if not results:
-        return
-    fieldnames = list(results[0].model_dump(mode="json").keys())
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+def export_comparison_json(summaries: Sequence[TargetSummary], path: Path) -> None:
+    payload = {**_report_metadata(), "summaries": [s.model_dump(mode="json") for s in summaries]}
+    _write_text(path, json.dumps(payload, indent=2, ensure_ascii=False))
+
+
+def export_csv(results: Sequence[ProbeResult], path: Path) -> None:
+    fieldnames = [*ProbeResult.model_fields, *ProbeResult.model_computed_fields]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
-        for r in results:
-            row = r.model_dump(mode="json")
-            row["resolved_ips"] = ";".join(row["resolved_ips"])
-            row["cname_chain"] = ";".join(row["cname_chain"])
+        for result in results:
+            row = result.model_dump(mode="json")
+            for key in ("resolved_ips", "cname_chain", "ede_codes"):
+                row[key] = ";".join(map(str, row[key]))
             writer.writerow(row)
-    console.print(f"[bold green]✔ CSV report saved:[/] {path}")
+
+
+def _write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")

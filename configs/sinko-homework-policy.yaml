@@ -1,3 +1,8 @@
+# Sinko Homework Mode: what the box must enforce on weekday afternoons.
+#
+# category_rules override the built-in profile expectations per category.
+# custom_blocklist / custom_allowlist entries cover the domain and all of its subdomains, the
+# most specific entry wins, and every entry is probed even if no profile mentions it.
 policy_name: "Sinko Afternoon Homework Mode (3:00 PM - 8:00 PM)"
 category_rules:
   ads: block
@@ -5,6 +10,7 @@ category_rules:
   parental_restricted: block
   gaming: block
   social: block
+  ai_chatbots: block  # The homework gets done by the kids, not by a chatbot.
   safe_search: safesearch
   core_service: allow
 custom_blocklist:
